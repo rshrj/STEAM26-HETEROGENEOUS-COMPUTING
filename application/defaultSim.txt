@@ -1,0 +1,10 @@
+PARTICLE	MASS		DECAY_LENGTH	dNdEtaMean	specPower	hitTracker	hitCaloEM	hitCaloHadron	decayProduct1	decayProduct2	decayProduct3
+
+Pion		0.13957		0				0			8			1			1			1				-				-				-
+Pion0		0.13498		0				0			8			0			0			1				-				-				-
+Electron	0.000511	0				2.5			8			1			1			0				-				-				-
+Muon		0.10566		0				0			8			1			0			0				-				-				-
+Photon		0			0				0			8			0			1			0				-				-				-
+Neutrino	0			0				0			8			0			0			0				-				-				-
+
+X			50			0.1				0.25		5			1			1			1				Electron	Electron	Electron

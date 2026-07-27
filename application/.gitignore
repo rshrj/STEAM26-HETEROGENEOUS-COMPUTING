@@ -1,0 +1,6 @@
+linkDef*
+project
+*.root
+*.pdf
+build
+install

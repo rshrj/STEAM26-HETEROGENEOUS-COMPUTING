@@ -29,14 +29,20 @@ The course is supposed to be runnable in the default `lxplus-like:9` container a
 Required compilers: GCC >= 11, CUDA >= 13, CMake
 
 ```sh
-# make a compiler available (e.g. a CERN LCG build via environment modules)
-module load <compiler>
+mkdir src build install
 
 # get the code
+cd src
 git clone https://github.com/CERN-STEAM-Academy/26-HETEROGENEOUS-COMPUTING.git
-cd 26-HETEROGENEOUS-COMPUTING
 
-# configure / build / run
+# configure and build
+cd ../build
+cmake -DCMAKE_INSTALL_PREFIX=../install ../src/26-HETEROGENEOUS-COMPUTING/application/
+make install -j
+
+# run
+cd ../install
+./project --help
 ```
 
 ## Materials

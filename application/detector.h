@@ -16,8 +16,6 @@ struct detectorData
 	hitCalo* mHitsCalo;
 	eventInfo* mEventInfos;
 	eventInfo* mEventInfosCalo;
-	unsigned int mNEntriesInBuffer; //particles for fastSim, trackerHits for full sim
-	unsigned int mNHitsCaloInBuffer;
 	unsigned int mNEventCount;
 	const particleMC* mParticlesMC;
 	const eventInfo* mEventInfosMC;
@@ -30,10 +28,7 @@ public:
 
 	gpuProcessor* gpu = nullptr;
 
-#ifdef GPU_CODE
-private:
-	gpuDisNormal disSigma;
-#else
+#ifndef GPU_CODE
 	int generateResponse(const generator& __restrict gen);
 	detector(std::RND_TYPE& gen) : mGen(gen), disSigma(0., 1.f) {}
 	detector() = delete;

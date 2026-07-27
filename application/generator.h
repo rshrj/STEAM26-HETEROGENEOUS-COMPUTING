@@ -26,12 +26,7 @@ public:
 
 	gpuProcessor* gpu = nullptr;
 
-#ifdef GPU_CODE
-private:
-	gpuDisPoisson disPoisson;
-	gpuDisExponential disExp;
-	gpuDisUniform disUniform;
-#else
+#ifndef GPU_CODE
 	generator(std::RND_TYPE& gen);
 	generator() = delete;
 	generator(const generator&) = delete;

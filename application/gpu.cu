@@ -1,6 +1,7 @@
 #include <cuda.h>
 #include <curand.h>
 #include <curand_kernel.h>
+#include <array>
 
 //Let everything that we include know, that we are compiling for GPU this time
 #define GPU_CODE
@@ -20,20 +21,10 @@ auto &configH = qConfigHost::config;
 #include "generator.h"
 #include "reconstruction.cpp"
 
-__global__ void reconstructionKernelGPU(reconstruction* __restrict rec, const detector* __restrict det)
+struct gpuProcessor::internals
 {
-	int id = threadIdx.x + blockDim.x * blockIdx.x;
-	if (id == 0)
-	{
-		rec->mNEntriesInBuffer = det->mNHitsCaloInBuffer; //Buffer for response particles must be as large as buffer for MC, which in this case equals buffer for Calo hits (no access to MC)
-		rec->mNEventCount = det->mNEventCount;
-	}
-	for (int i = id;i < det->mNEventCount;i += blockDim.x * gridDim.x)
-	{
-		if (rec->reconstruct(&det->mHitsTracker[det->mEventInfos[i].mFirstParticle], det->mEventInfos[i].mNParticles, &det->mHitsCalo[det->mEventInfosCalo[i].mFirstParticle], det->mEventInfosCalo[i].mNParticles, det->mEventInfos[i], det->mEventInfosCalo[i], rec->mEventInfos[i])) break;
-		rec->fit(rec->mEventInfos[i], &det->mHitsTracker[det->mEventInfos[i].mFirstParticle], &det->mHitsCalo[det->mEventInfosCalo[i].mFirstParticle], nullptr);
-	}
-}
+	std::array<cudaStream_t, 4> streams;
+};
 
 //Some debug output for CUDA errors
 #define qon_mstr(a) #a
@@ -78,10 +69,14 @@ void gpuProcessor::setGpuPointers(char* ptr, generator& gen, reconstruction& rec
 	gpuSetPointer(gpuEventInfosRec, ptr, configH.nEvents);
 	gpuSetPointer(gpuParticlesRec, ptr, rec.mParticleBufferSize);
 	gpuSetPointer(gpuTmpRec, ptr, rec.mTmpBufferSize);
+	gpuSetPointer(gpuCorrectionBuffer, ptr, rec.CorrectionBufferSize());
 	gpuMemorySize = ptr - ptrBase;
 }
 
-gpuProcessor::gpuProcessor() {}
+gpuProcessor::gpuProcessor()
+{
+	mInternals = std::make_unique<internals>();
+}
 
 int gpuProcessor::gpuInit(generator& gen, detector& det, reconstruction& rec)
 {
@@ -103,7 +98,7 @@ int gpuProcessor::gpuInit(generator& gen, detector& det, reconstruction& rec)
 	setGpuPointers(nullptr, gen, rec);
 	CUDACHK(cudaMalloc(&gpuMemoryPointerBase, gpuMemorySize));
 	setGpuPointers(gpuMemoryPointerBase, gen, rec);
-	//printf("Allocated %'lld bytes of GPU memory\n", (long long int) gpuMemorySize);
+	printf("Allocated %'zu bytes of GPU memory\n", gpuMemorySize);
 
 	CUDACHK(cudaMemcpyToSymbol(config, &configH, sizeof(structConfig), 0, cudaMemcpyHostToDevice));
 	CUDACHK(cudaGetLastError());
@@ -115,44 +110,34 @@ int gpuProcessor::gpuInit(generator& gen, detector& det, reconstruction& rec)
 	gpuDetCPU->mEventInfos = gpuEventInfosDet;
 	gpuDetCPU->mEventInfosCalo = gpuEventInfosDetCalo;
 
+	gpuRecCPU->nParticles = 0;
 	gpuRecCPU->mParticles = gpuParticlesRec;
 	gpuRecCPU->mEventInfos = gpuEventInfosRec;
 	gpuRecCPU->mTmpBuffer = gpuTmpRec;
+	gpuRecCPU->mCorrectionMap = gpuCorrectionBuffer;
 	gpuRecCPU->mParticleBufferSize = rec.mParticleBufferSize;
 
 	CUDACHK(cudaMemcpy(gpuDetGPU, gpuDetCPU, sizeof(*gpuDetCPU), cudaMemcpyHostToDevice));
 	CUDACHK(cudaMemcpy(gpuRecGPU, gpuRecCPU, sizeof(*gpuDetCPU), cudaMemcpyHostToDevice));
+
+	for (unsigned int i = 0; i < mInternals->streams.size(); i++) {
+		CUDACHK(cudaStreamCreate(&mInternals->streams[i]));
+	}
 
 	gen.gpu = det.gpu = rec.gpu = this;
 	initialized = true;
 	return(0);
 }
 
-//Main host driven GPU processing functions - for running step by step
-int gpuProcessor::reconstructionGPU(reconstruction& rec, const detector& det)
-{
-	gpuDetCPU->mNEntriesInBuffer = det.mNEntriesInBuffer;
-	gpuDetCPU->mNHitsCaloInBuffer = det.mNHitsCaloInBuffer;
-	gpuDetCPU->mNEventCount = det.mNEventCount;
-	CUDACHK(cudaMemcpy(gpuDetGPU, gpuDetCPU, sizeof(*gpuDetCPU), cudaMemcpyHostToDevice));
-	CUDACHK(cudaMemcpy(gpuEventInfosDet, det.mEventInfos, det.mNEventCount * sizeof(eventInfo), cudaMemcpyHostToDevice));
-	CUDACHK(cudaMemcpy(gpuEventInfosDetCalo, det.mEventInfosCalo, det.mNEventCount * sizeof(eventInfo), cudaMemcpyHostToDevice));
-	CUDACHK(cudaMemcpy(gpuHitsTracker, det.mHitsTracker, gpuDetCPU->mNEntriesInBuffer * sizeof(hitTracker), cudaMemcpyHostToDevice));
-	CUDACHK(cudaMemcpy(gpuHitsCalo, det.mHitsCalo, gpuDetCPU->mNHitsCaloInBuffer * sizeof(hitCalo), cudaMemcpyHostToDevice));
-	reconstructionKernelGPU<<<configH.gpuBlocks, configH.gpuThreads>>>(gpuRecGPU, gpuDetGPU);
-	CUDACHK(cudaGetLastError());
-	CUDACHK(cudaDeviceSynchronize());
-	CUDACHK(cudaMemcpy(gpuRecCPU, gpuRecGPU, sizeof(*gpuRecCPU), cudaMemcpyDeviceToHost));
-	CUDACHK(cudaMemcpy(rec.mEventInfos, gpuEventInfosRec, det.mNEventCount * sizeof(eventInfo), cudaMemcpyDeviceToHost));
-	CUDACHK(cudaMemcpy(rec.mParticles, gpuParticlesRec, gpuRecCPU->mNEntriesInBuffer * sizeof(particleResponse), cudaMemcpyDeviceToHost));
-	rec.nParticles = gpuRecCPU->nParticles;
-	rec.mNEntriesInBuffer = gpuRecCPU->mNEntriesInBuffer;
-
-	return(0);
-}
-
 int gpuProcessor::gpuExit()
 {
+	if (!initialized) {
+		return 1;
+	}
+	for (unsigned int i = 0; i < mInternals->streams.size(); i++) {
+		CUDACHK(cudaStreamDestroy(mInternals->streams[i]));
+	}
+
 	CUDACHK(cudaFree(gpuMemoryPointerBase));
 	free(gpuDetCPU);
 	free(gpuRecCPU);
@@ -167,4 +152,54 @@ gpuProcessor::~gpuProcessor()
 		printf("Error uninitializing GPU\n");
 		exit(1);
 	}
+}
+
+__global__ void reconstructionKernelGPU(reconstruction* __restrict rec, const detector* __restrict det, int start, int end)
+{
+	int id = threadIdx.x + blockDim.x * blockIdx.x;
+	int size = blockDim.x * gridDim.x;
+	for (int i = start + id;i < end;i += size)
+	{
+		if (rec->reconstruct(&det->mHitsTracker[det->mEventInfos[i].mFirstParticle], det->mEventInfos[i].mNParticles, &det->mHitsCalo[det->mEventInfosCalo[i].mFirstParticle], det->mEventInfosCalo[i].mNParticles, det->mEventInfos[i], det->mEventInfosCalo[i], rec->mEventInfos[i])) break;
+		rec->fit(rec->mEventInfos[i], &det->mHitsTracker[det->mEventInfos[i].mFirstParticle], &det->mHitsCalo[det->mEventInfosCalo[i].mFirstParticle], nullptr);
+	}
+}
+
+//Main host driven GPU processing functions - for running step by step
+int gpuProcessor::reconstructionGPU(reconstruction& rec, const detector& det)
+{
+	CUDACHK(cudaMemcpy(gpuCorrectionBuffer, rec.mCorrectionMap, sizeof(*rec.mCorrectionMap) * rec.CorrectionBufferSize(), cudaMemcpyHostToDevice));
+
+	gpuDetCPU->nParticles = det.nParticles;
+	gpuDetCPU->nHitsCalo = det.nHitsCalo;
+	gpuDetCPU->mNEventCount = det.mNEventCount;
+	const auto& stream = mInternals->streams[0];
+	CUDACHK(cudaMemcpyAsync(gpuDetGPU, gpuDetCPU, sizeof(*gpuDetCPU), cudaMemcpyHostToDevice, stream));
+	// Run on GPU in batches of size config.gpuEventsAtOnce on CUDA stream stream
+	for (int i = 0; i < det.mNEventCount; i += configH.gpuEventsAtOnce) {
+		int end = std::min<int>(i + configH.gpuEventsAtOnce, det.mNEventCount);
+		// Compute sizes and offsets for cudaMemcpy
+		int iterationEventOffset = i;
+		int iterationNEvents = end - i;
+		int iterationParticleOffset = det.mEventInfos[i].mFirstParticle;
+		int iterationNParticles = (end == det.mNEventCount ? det.nParticles : det.mEventInfos[i + configH.gpuEventsAtOnce].mFirstParticle) - iterationParticleOffset;
+		int iterationCaloOffset = det.mEventInfosCalo[i].mFirstParticle;
+		int iterationNCalo = (end == det.mNEventCount ? det.nHitsCalo : det.mEventInfosCalo[i + configH.gpuEventsAtOnce].mFirstParticle) - iterationCaloOffset;
+		// Copy data to GPU
+		CUDACHK(cudaMemcpyAsync(gpuEventInfosDet + iterationEventOffset, det.mEventInfos + iterationEventOffset, iterationNEvents * sizeof(eventInfo), cudaMemcpyHostToDevice, stream));
+		CUDACHK(cudaMemcpyAsync(gpuEventInfosDetCalo + iterationEventOffset, det.mEventInfosCalo + iterationEventOffset, iterationNEvents * sizeof(eventInfo), cudaMemcpyHostToDevice, stream));
+		CUDACHK(cudaMemcpyAsync(gpuHitsTracker + iterationParticleOffset, det.mHitsTracker + iterationParticleOffset, iterationNParticles * sizeof(hitTracker), cudaMemcpyHostToDevice, stream));
+		CUDACHK(cudaMemcpyAsync(gpuHitsCalo + iterationCaloOffset, det.mHitsCalo + iterationCaloOffset, iterationNCalo * sizeof(hitCalo), cudaMemcpyHostToDevice, stream));
+		// Execute GPU kernel
+		reconstructionKernelGPU<<<configH.gpuBlocks, configH.gpuThreads, 0, stream>>>(gpuRecGPU, gpuDetGPU, i, end);
+		// Copy data back to host
+		CUDACHK(cudaGetLastError());
+		CUDACHK(cudaMemcpyAsync(rec.mEventInfos + iterationEventOffset, gpuEventInfosRec + iterationEventOffset, iterationNEvents * sizeof(eventInfo), cudaMemcpyDeviceToHost, stream));
+		CUDACHK(cudaMemcpyAsync(rec.mParticles + iterationCaloOffset, gpuParticlesRec + iterationCaloOffset, iterationNCalo * sizeof(particleResponse), cudaMemcpyDeviceToHost, stream));
+	}
+	CUDACHK(cudaMemcpyAsync(gpuRecCPU, gpuRecGPU, sizeof(*gpuRecCPU), cudaMemcpyDeviceToHost, stream));
+	CUDACHK(cudaStreamSynchronize(stream));
+	rec.nParticles = gpuRecCPU->nParticles;
+
+	return(0);
 }

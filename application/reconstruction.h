@@ -2,6 +2,7 @@
 #define RECONSTRUCTION_H
 
 #include "main.h"
+#include <atomic>
 
 class detector;
 template <class T> struct hitList_T;
@@ -9,17 +10,21 @@ typedef hitList_T<float> hitList;
 
 struct reconstructionData
 {
+#ifdef GPU_CODE
 	unsigned int nParticles = 0;
-	
+#else
+	std::atomic<unsigned int> nParticles = 0;
+#endif
+
 	//Flat structures to copy data from / to GPUs
 	particleResponse* mParticles;
 	eventInfo* mEventInfos;
-	unsigned int mNEntriesInBuffer;
 	unsigned int mParticleBufferSize;
 	unsigned int mTmpBufferSize;
 	unsigned int mNEventCount;
 	const particleMC* mParticlesMC;
 	const eventInfo* mEventInfosMC;
+	float* mCorrectionMap;
 	char* mTmpBuffer;
 };
 
@@ -32,10 +37,12 @@ public:
 	GPUi() void fitParticleCalo(particleResponse& part, hitList& partHits, const hitCalo* __restrict hitsCalo, float& lastR);
 	GPUh() void estimateParticleBufferSize(unsigned int nHitsTracker);
 	GPUh() void calculateScratchBufferSize(unsigned int nParticles, unsigned int nHitsTracker, unsigned int nHitsCalo);
-	
+	GPU() float getCorrection(float x, float y, float z, float alpha);
+	GPUh() size_t CorrectionBufferSize() const;
+
 	int mError;
 	gpuProcessor* gpu = nullptr;
-	
+
 #ifdef GPU_CODE
 #else
 	reconstruction() {}
@@ -47,6 +54,7 @@ private:
 	//Manage memory via std::vector on CPU
 	vecpod<particleResponse> mParticlesMemory;
 	vecpod<eventInfo> mEventInfosMemory;
+	vecpod<float> mCorrectionMemory;
 	vecpod<char> mTmpMem;
 #endif
 };

@@ -151,7 +151,7 @@ GPUi() int generator::generateEvent(int evNum)
 		nCreate[i] = disPoisson[i](mGen);
 		myNParticles += nCreate[i] * (config.particles[i].mDecayLength > 0.f ? 4 : 1);
 	}
-	unsigned int myFirstParticle = ATOMIC_ADD(&mNParticles, myNParticles);
+	unsigned int myFirstParticle = mNParticles += myNParticles;
 	if (myFirstParticle + myNParticles > mParticleBufferSize)
 	{
 		//We can increase the memory if we are on the host
@@ -186,7 +186,7 @@ GPUi() int generator::generateEvent(int evNum)
 		}
 		nextParticle += nParticle;
 	}
-	ATOMIC_ADD(&nDecayParticles, countDecays);
+	nDecayParticles += countDecays;
 
 	return(0);
 }

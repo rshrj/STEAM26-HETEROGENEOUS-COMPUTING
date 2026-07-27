@@ -23,8 +23,8 @@ GPUi() int detector::generateResponse(const particleMC* __restrict partMC, const
 {
 	unsigned int nResponse = 0;
 	unsigned int nResponseCalo = 0;
-	ev.mFirstParticle = kGPUCode ? (evMC.mFirstParticle * NLAYERS) : mNEntriesInBuffer;
-	evCalo.mFirstParticle = kGPUCode ? evMC.mFirstParticle : mNHitsCaloInBuffer;
+	ev.mFirstParticle = nParticles;
+	evCalo.mFirstParticle =  nHitsCalo;
 
 	for (unsigned int i = 0;i < evMC.mNParticles;i++)
 	{
@@ -57,13 +57,8 @@ GPUi() int detector::generateResponse(const particleMC* __restrict partMC, const
 	}
 	ev.mNParticles = nResponse;
 	evCalo.mNParticles = nResponseCalo;
-	ATOMIC_ADD(&nParticles, nResponse);
-	ATOMIC_ADD(&nHitsCalo, nResponseCalo);
-	if (!kGPUCode)//Count real number of created response particles on CPU (serial processing)
-	{
-		mNEntriesInBuffer += nResponse;
-		mNHitsCaloInBuffer += nResponseCalo;
-	}
+	nParticles += nResponse;
+	nHitsCalo += nResponseCalo;
 
 	return(0);
 }
@@ -93,8 +88,8 @@ int detector::generateResponse(const generator& __restrict gen)
 	mNEventCount = gen.mNEventCount;
 	mParticlesMC = gen.mParticlesMC;
 	mEventInfosMC = gen.mEventInfosMC;
-	mNEntriesInBuffer = 0;
-	mNHitsCaloInBuffer = 0;
+	nParticles = 0;
+	nHitsCalo = 0;
 	for (unsigned int i = 0;i < gen.mNEventCount;i++)
 	{
 		if (generateResponse(&mParticlesMC[mEventInfosMC[i].mFirstParticle], mEventInfosMC[i], mEventInfos[i], mEventInfosCalo[i])) return(1);

@@ -1,6 +1,17 @@
 #include "detector.h"
 #include "reconstruction.h"
 
+#ifndef GPU_CODE
+#include <random>
+#include <thread>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#include "cmodules/timer.h"
+#endif
+
+static constexpr size_t correction_map_size = 500;
+
 template <class T> struct indexType;
 template <> struct indexType<float> {typedef int type;};
 
@@ -12,7 +23,7 @@ typedef hitList_T<float> hitList;
 
 GPUi() int reconstruction::reconstruct(const hitTracker* __restrict hitsTracker, int nHitsTracker, const hitCalo* __restrict hitsCalo, int nHitsCalo, const eventInfo& evTracker, const eventInfo& evCalo, eventInfo& ev)
 {
-	ev.mFirstParticle = kGPUCode ? evCalo.mFirstParticle : mNEntriesInBuffer; //For GPUs, we reserve space for 1 calo hit, so we take that index here as it matches the space for 1 track
+	ev.mFirstParticle = evCalo.mFirstParticle; //Use calo hit id for output buffer index
 	unsigned int partFound = 0;
 	//MC based stupid reconstruction algorithm
 	int nCurMCParticle = 0;
@@ -70,8 +81,12 @@ GPUi() int reconstruction::reconstruct(const hitTracker* __restrict hitsTracker,
 		nCurMCParticle++;
 	}
 	ev.mNParticles = partFound;
-	ATOMIC_ADD(&nParticles, partFound);
-	if (!kGPUCode) mNEntriesInBuffer += partFound; //Count real number of created response particles on CPU (serial processing)
+
+#ifdef GPU_CODE
+	atomicAdd(&nParticles, partFound);
+#else
+	nParticles.fetch_add(partFound);
+#endif
 	return(0);
 }
 
@@ -156,6 +171,19 @@ GPUi() static float getMass(particleResponse part)
 	return config.particles[part.mPID].mMass;
 }
 
+GPUi() float reconstruction::getCorrection(float x_, float y_, float z, float alpha) // This is some bogus random correction, to blow up the memory size and add some more compute operations
+{
+	float sa = std::sin(alpha);
+	float ca = std::cos(alpha);
+	float x = ca * x_ - sa * y_;
+	float y = sa * x_ + ca * y_;
+	unsigned int xx = std::max<int>(0, std::min<int>(correction_map_size - 1, (x + config.detectorRCalo) * ((float)correction_map_size / (2.f * config.detectorRCalo))));
+	unsigned int yy = std::max<int>(0, std::min<int>(correction_map_size - 1, (y + config.detectorRCalo) * ((float)correction_map_size / (2.f * config.detectorRCalo))));
+	unsigned int zz = std::max<int>(0, std::min<int>(correction_map_size - 1, (z + config.detectorZ) * ((float)correction_map_size / (2.f * config.detectorZ))));
+	float corr = mCorrectionMap[(xx * correction_map_size + yy) * correction_map_size + zz];
+	return std::asinh(corr);
+}
+
 template <class T> GPUi() void reconstruction::fitParticle(particleResponse_T<T>& part, hitList_T<T>& partHits, const hitTracker* __restrict hitsTracker, const hitCalo* __restrict hitsCalo, T& lastR)
 {
 	T hitAlpha[NLAYERS + 1];
@@ -175,6 +203,7 @@ template <class T> GPUi() void reconstruction::fitParticle(particleResponse_T<T>
 	float sigma2Y = config.resRPhi * config.resRPhi;
 	float sigma2Z = config.resZ * config.resZ;
 	c[0] = cosAlpha * cosAlpha * sigma2Y;
+	c[0] += getCorrection(x, y, FETCHHIT(hitsTracker, partHits.hitId[0], mX[2]), hitAlpha[0]);
 	//Rotated to detector system of hit 2 --> hitX = config.detectorR[1], hitY = 0
 
 	//Kalman filter 2nd step, propagate and update with explicit formula
@@ -189,6 +218,7 @@ template <class T> GPUi() void reconstruction::fitParticle(particleResponse_T<T>
 	c[5] = 2.f * sigma2Z * delta1 * delta1;
 	c[4] = sigma2Z * delta1;
 	c[3] = sigma2Z;
+	c[0] += getCorrection(x, y, z, hitAlpha[1]);
 	//Rotate to detector system of hit 3
 	dalpha = hitAlpha[1] - hitAlpha[2];
 	sinAlpha = std::sin(dalpha);
@@ -206,6 +236,7 @@ template <class T> GPUi() void reconstruction::fitParticle(particleResponse_T<T>
 		if (nLayer != 2) rotate<T>(x, y, tgp, c[0], c[1], hitAlpha[nLayer - 1] - hitAlpha[nLayer]);
 		propagate<T>(x, T(config.detectorR[nLayer]), y, tgp, z, tgl, c);
 		filter<T>(y, tgp, z, tgl, c, FETCHHIT(hitsTracker, partHits.hitId[nLayer], mX[2]), sigma2Y, sigma2Z);
+		c[0] += getCorrection(x, y, z, hitAlpha[nLayer]);
 	}
 	rotate<T>(x, y, tgp, c[0], c[1], hitAlpha[NLAYERS - 1] - hitAlpha[NLAYERS]);
 	propagate<T>(x, T(config.detectorRCalo), y, tgp, z, tgl, c);
@@ -261,33 +292,107 @@ void reconstruction::ReserveMemory(unsigned int nEvents, unsigned int nParticles
 	calculateScratchBufferSize(nParticles, nHitsTracker, nHitsCalo);
 	if (nParticles > mParticlesMemory.size()) mParticlesMemory.resize(nParticles);
 	if (nEvents > mEventInfosMemory.size()) mEventInfosMemory.resize(nEvents);
+	mCorrectionMemory.resize(CorrectionBufferSize());
 	mTmpMem.resize(mTmpBufferSize);
 	mParticles = mParticlesMemory.data();
 	mEventInfos = mEventInfosMemory.data();
 	mTmpBuffer = mTmpMem.data();
+	mCorrectionMap = mCorrectionMemory.data();
 	mParticleBufferSize = nParticles;
+}
+
+GPUh() size_t reconstruction::CorrectionBufferSize() const
+{
+	return correction_map_size * correction_map_size * correction_map_size;
 }
 
 int reconstruction::reconstruct(const detector& __restrict det)
 {
-	estimateParticleBufferSize(det.mNEntriesInBuffer);
-	ReserveMemory(det.mNEventCount, mParticleBufferSize, det.mNEntriesInBuffer, det.mNHitsCaloInBuffer);
-	mNEventCount = det.mNEventCount;
-	mParticlesMC = det.mParticlesMC;
-	mEventInfosMC = det.mEventInfosMC;
-	mNEntriesInBuffer = 0;
-	if (gpu)
-	{
-		return(gpu->reconstructionGPU(*this, det));
-	}
-	else
-	{
-		for (unsigned int i = 0;i < det.mNEventCount;i++)
-		{
-			if (reconstruct(&det.mHitsTracker[det.mEventInfos[i].mFirstParticle], det.mEventInfos[i].mNParticles, &det.mHitsCalo[det.mEventInfosCalo[i].mFirstParticle], det.mEventInfosCalo[i].mNParticles, det.mEventInfos[i], det.mEventInfosCalo[i], mEventInfos[i])) return(1);
-			fit(mEventInfos[i], &det.mHitsTracker[det.mEventInfos[i].mFirstParticle], &det.mHitsCalo[det.mEventInfosCalo[i].mFirstParticle], nullptr);
+	int processId = 0;
+	std::vector<pid_t> processPIDs;
+	if (config.nThreads && config.multiProcess) { // Start nThreads - 1 additional processes, if config.multiProcess set
+		for (int i = 0; i < config.nThreads - 1; i++) {
+			pid_t pid = fork();
+			if (pid < 0) {
+				printf("Error creating process!\n");
+				exit(1);
+			} else if (pid == 0) {
+				processId = i + 1;
+				break;
+			} else {
+				processPIDs.emplace_back(pid);
+			}
 		}
 	}
+
+	estimateParticleBufferSize(det.nParticles);
+	ReserveMemory(det.mNEventCount, mParticleBufferSize, det.nParticles, det.nHitsCalo);
+
+	std::mt19937 rng(config.seed);
+	std::normal_distribution<float> dist(0.0f, 0.01);
+	for (size_t i = 0; i < mCorrectionMemory.size(); i++) {
+    	mCorrectionMemory[i] = dist(rng);
+	}
+
+	// Lambda function running the actual reconstruction, optionally multi-threaded oder with multi-processing
+	auto reconstruct_lambda = [this, &det](int myId) {
+		for (int repeat = 0; repeat < config.nBenchmarkRepeat; repeat++) {
+			if (myId == 0) {
+			printf("Running reconstruction (run %d)\n", repeat);
+			}
+			mNEventCount = det.mNEventCount;
+			mParticlesMC = det.mParticlesMC;
+			mEventInfosMC = det.mEventInfosMC;
+			if (gpu)
+			{
+				if (gpu->reconstructionGPU(*this, det)) {
+					exit(1);
+				}
+			}
+			else
+			{
+				unsigned int eventsPerWorker = (det.mNEventCount + config.nThreads - 1) / config.nThreads;
+				unsigned int myStart = myId * eventsPerWorker;
+				unsigned int myEnd = std::min<unsigned int>((myId + 1) * eventsPerWorker, det.mNEventCount);
+				for (unsigned int i = myStart;i < myEnd;i++)
+				{
+					if (reconstruct(&det.mHitsTracker[det.mEventInfos[i].mFirstParticle], det.mEventInfos[i].mNParticles, &det.mHitsCalo[det.mEventInfosCalo[i].mFirstParticle], det.mEventInfosCalo[i].mNParticles, det.mEventInfos[i], det.mEventInfosCalo[i], mEventInfos[i])) exit(1);
+					fit(mEventInfos[i], &det.mHitsTracker[det.mEventInfos[i].mFirstParticle], &det.mHitsCalo[det.mEventInfosCalo[i].mFirstParticle], nullptr);
+				}
+			}
+		}
+	};
+
+	HighResTimer timer;
+	timer.Start();
+	std::vector<std::thread> threadWorkers;
+	if (config.nThreads > 1 && !config.multiProcess) { // Start nThreads - 1 additional threads, if config.multiProcess is not set
+		threadWorkers.resize(config.nThreads - 1);
+		for (int i = 0; i < config.nThreads - 1; i++) {
+			threadWorkers[i] = std::thread(reconstruct_lambda, i + 1); // All newly started threads execute the reconstruct_lambda
+		}
+	}
+	reconstruct_lambda(processId); // The main thread / process, and also all additional processes in case of config.multiProcess, execute the reconstruct_lambda
+	if (config.nThreads > 1 && !config.multiProcess) { // Wait for threads to finish
+		for (int i = 0; i < config.nThreads - 1; i++) {
+			threadWorkers[i].join();
+		}
+		threadWorkers.clear();
+	}
+	if (config.nThreads > 1 && config.multiProcess) { // Wait for processes to finish
+		for (int i = 0; i < config.nThreads - 1; i++) {
+		    int status;
+        	waitpid(processPIDs[i], &status, 0);
+		}
+		processPIDs.clear();
+	}
+
+	if (processId == 0) {
+	  printf("Pure reconstruction time: %f seconds\n", timer.GetCurrentElapsedTime());
+	} else {
+	  exit(0);
+	}
+
 	return(0);
 }
 #endif

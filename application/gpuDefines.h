@@ -15,11 +15,4 @@
 #define GPUhd()
 #endif
 
-//Atomic function wrappers for the host
-#ifdef GPU_CODE
-	template <class T> GPUhd() T ATOMIC_ADD(T* var, T val) {return(atomicAdd(var, val));}
-#else
-	template <class T> T ATOMIC_ADD(T* var, T val) {T retVal = *var; *var += val;return(retVal);}
-#endif
-
 #endif

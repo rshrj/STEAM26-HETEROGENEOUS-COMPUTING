@@ -23,7 +23,8 @@ extern std::vector<std::string> configParticleNames;
 
 BeginConfig(structConfig, config)
 AddHelpText("General settings")
-AddOption(nEvents, unsigned long long int, 1000, "nEvents", 'n', "Number of events to generate", min(1ull))
+AddOption(nEvents, unsigned int, 1000, "nEvents", 'n', "Number of events to generate", min(1u))
+AddOption(nBenchmarkRepeat, int, 1, "nBenchmarkRepeat", 'r', "Repeat the reconstruction multiple times for benchmarking", min(1))
 AddOption(seed, int, -1, "seed", 0, "Random number seed (-1 for random)")
 AddOption(quiet, int, 0, "quiet", 0, "Quiet mode, no console output (set to -1 to disable auto-quiet for MPI / ZMQ)")
 AddHelp("help", 'h')
@@ -50,11 +51,11 @@ AddOption(resPt, float, 0.005, "resPt", 0, "Relative Pt resolution (sigmaPt / Pt
 
 AddHelpText("Multithreading settings")
 AddOption(nThreads, int, 1, "nThreads", 't', "Number of threads to run", min(1))
+AddOption(multiProcess, int, 0, "multiProcess", 0, "Do multi-processing instead of multi-threading", def(1))
 
 AddHelpText("GPU settings")
 AddOption(runOnGPU, int, 0, "gpu", 'g', "Use the GPU for the generator (0: no, 1: yes, 2: for generation, 3: for generation and detectorm, 4 for generation, detector, and analysis", def(1))
-AddOption(nGPUThreads, int, 1, "nGPUThreads", 0, "Number of OpenMP threads to use the GPU", min(0))
-AddOption(nEventsOnGPU, unsigned int, 0, "nEventsOnGPU", 0, "Number of Events to compute on GPUs (subset of nEvents, in case nGPUThreads < nThreads)")
+AddOption(gpuEventsAtOnce, unsigned int, 0, "gpuEventsAtOnce", 0, "GPU Device Number to use")
 AddOption(gpuDevice, unsigned int, 0, "gpuDevice", 0, "GPU Device Number to use")
 AddOption(gpuThreads, unsigned int, 256, "gpuThreads", 0, "Number of GPU threads per CUDA block")
 AddOption(gpuBlocks, unsigned int, 40, "gpuBlocks", 0, "Number of GPU CUDA blocks")

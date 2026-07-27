@@ -2,6 +2,7 @@
 #define GPU_H
 
 #include "particles.h"
+#include <memory>
 
 class generator;
 class detector;
@@ -25,6 +26,8 @@ private:
 	void setGpuPointers(char* ptr, generator& gen, reconstruction& rec);
 	int gpuExit();
 
+	struct internals;
+
 	detector* gpuDetCPU = nullptr;
 	detector* gpuDetGPU = nullptr;
 	eventInfo* gpuEventInfosDet = nullptr;
@@ -32,6 +35,7 @@ private:
 	particleResponse* gpuParticles = nullptr;
 	hitTracker* gpuHitsTracker = nullptr;
 	hitCalo* gpuHitsCalo = nullptr;
+	float* gpuCorrectionBuffer = nullptr;
 
 	reconstruction* gpuRecCPU = nullptr;
 	reconstruction* gpuRecGPU = nullptr;
@@ -42,6 +46,8 @@ private:
 	char* gpuMemoryPointerBase = nullptr;
 	size_t gpuMemorySize = 0;
 	bool initialized = false;
+
+	std::unique_ptr<internals> mInternals;
 #endif
 };
 

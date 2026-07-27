@@ -34,11 +34,13 @@ int setup(int argc, char** argv)
 		std::random_device rd;
 		config.seed = rd();
 	}
+	if (config.gpuEventsAtOnce == 0)
+	{
+		config.gpuEventsAtOnce = config.nEvents;
+	}
 
 	setupCheckAvail(config.runOnGPU, kGPUAvail, "Cannot run on GPU because CUDA support is disabled");
-	setupCheckAvail(config.nGPUThreads, config.nGPUThreads <= config.nThreads, "Cannot have more GPU threads than threads", config.nThreads);
-
-	if (config.nEventsOnGPU > config.nEvents) config.nEventsOnGPU = config.nEvents;
+	setupCheckAvail(config.nThreads, !config.runOnGPU, "Cannot use multiple threads if reconstructing on GPU", 1);
 
 	if (readSimulationFile()) return 1;
 
@@ -52,16 +54,19 @@ int setup(int argc, char** argv)
 	return(0);
 }
 
-void main_processing(int& nEventsTotal, int& nParticlesMCTotal, int& nDecayParticlesTotal, int& nParticlesTotal, int& nHitsCaloTotal, int& nRecParticlesTotal, double& timeGen, double& timeResponse, double& timeReconstruction, HighResTimer& timerTotal)
+int main(int argc, char** argv)
 {
+	//feenableexcept(FE_INVALID | FE_DIVBYZERO | FE_OVERFLOW);
+	if (setup(argc, argv)) return(1);
+
+	if (config.quiet <= 0) printf("\nProcessing events...\n");
+	int nEventsTotal = 0, nParticlesMCTotal = 0, nParticlesTotal = 0, nHitsCaloTotal = 0, nRecParticlesTotal = 0, nDecayParticlesTotal = 0;
+	double timeGen = 0., timeResponse = 0., timeReconstruction = 0.;
+
 	HighResTimer timer;
 	int iThread = 0;
-	unsigned long long int nEvents = config.nEvents / config.nThreads;
-	bool useGPU = config.runOnGPU && iThread < config.nGPUThreads;
-	if (config.runOnGPU && config.nEventsOnGPU && config.nGPUThreads != config.nThreads)
-	{
-		nEvents = useGPU ? (config.nEventsOnGPU / config.nGPUThreads) : ((config.nEvents - config.nEventsOnGPU) / (config.nThreads - config.nGPUThreads));
-	}
+	size_t nEvents = config.nEvents;
+	bool useGPU = config.runOnGPU;
 
 	std::random_device rd;
 	randGen rand(config.seed + iThread);
@@ -94,30 +99,10 @@ void main_processing(int& nEventsTotal, int& nParticlesMCTotal, int& nDecayParti
 	nRecParticlesTotal += rec.nParticles;
 
 	nEventsTotal += nEvents;
-}
 
-int main(int argc, char** argv)
-{
-	//feenableexcept(FE_INVALID | FE_DIVBYZERO | FE_OVERFLOW);
-	if (setup(argc, argv)) return(1);
-
-	if (config.quiet <= 0) printf("\nProcessing events...\n");
-	int nEventsTotal = 0, nParticlesMCTotal = 0, nParticlesTotal = 0, nHitsCaloTotal = 0, nRecParticlesTotal = 0, nDecayParticlesTotal = 0;
-	double timeGen = 0., timeResponse = 0., timeReconstruction = 0.;
-	HighResTimer timerTotal;
-	timerTotal.Start();
-	if (config.nThreads == 1)
-	{
-		main_processing(nEventsTotal, nParticlesMCTotal, nDecayParticlesTotal, nParticlesTotal, nHitsCaloTotal, nRecParticlesTotal, timeGen, timeResponse, timeReconstruction, timerTotal);
-	}
-	else
-	{
-		exit(1);
-	}
-	double timeTotal = timerTotal.GetCurrentElapsedTime();
 	if (config.quiet <= 0)
 	{
 		printf("\nGenerated %d events, %d MC particles, %d decaying particles, %d hits in tracker, %d hits in calo, %d reconstructed particles\n", nEventsTotal, nParticlesMCTotal, nDecayParticlesTotal, nParticlesTotal, nHitsCaloTotal, nRecParticlesTotal);
-		printf("Time: Total: %f seconds, (Generate events: %f seconds, Simulate detectors: %f seconds, Reconstruction: %f seconds)\n", timeTotal, timeGen / config.nThreads, timeResponse / config.nThreads, timeReconstruction / config.nThreads);
+		printf("Time: Generate events: %f seconds, Simulate detectors: %f seconds, Reconstruction: %f seconds\n", timeGen, timeResponse, timeReconstruction);
 	}
 }

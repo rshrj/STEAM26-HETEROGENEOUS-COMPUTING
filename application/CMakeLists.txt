@@ -29,8 +29,6 @@ add_executable(project
   cmodules/timer.cpp
 )
 
-add_executable(foo foo.cu)
-
 # warn about undefined symbols already for libraries
 if(ENABLE_WARNINGS)
   SET_TARGET_PROPERTIES(project PROPERTIES LINK_FLAGS "-Wl,--as-needed")
@@ -75,4 +73,4 @@ if (CUDA IN_LIST LANGUAGES)
 endif()
 
 INSTALL(FILES defaultSim.txt DESTINATION .)
-INSTALL(TARGETS project foo DESTINATION .)
+INSTALL(TARGETS project DESTINATION .)
